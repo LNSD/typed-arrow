@@ -703,6 +703,8 @@ fn impl_record(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                 #(#views_array_fields,)*
                 index: usize,
                 len: usize,
+                // Keeps the lifetime used when the record has no fields, and so no column arrays.
+                _phantom: ::core::marker::PhantomData<&#view_lt ()>,
             }
 
             impl #view_iter_impl_generics ::core::iter::Iterator for #views_ident #view_iter_ty_generics #view_iter_where_clause {
@@ -752,6 +754,7 @@ fn impl_record(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                         #(#views_init_fields)*
                         index: 0,
                         len: batch.num_rows(),
+                        _phantom: ::core::marker::PhantomData,
                     })
                 }
             }
