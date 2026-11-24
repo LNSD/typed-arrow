@@ -110,7 +110,7 @@ pub use decimals::{Decimal128, Decimal256};
 pub use dictionary::{DictKey, Dictionary};
 pub use intervals::{IntervalDayTime, IntervalMonthDayNano, IntervalYearMonth};
 pub use lists::{FixedSizeList, FixedSizeListNullable, LargeList, List};
-pub use map::{Map, OrderedMap};
+pub use map::{Map, MapArrayBuilder, OrderedMap};
 pub use null_type::Null;
 pub use strings::LargeUtf8;
 pub use temporal::{

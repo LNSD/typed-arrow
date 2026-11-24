@@ -1,8 +1,11 @@
 //! `Map` and `OrderedMap` bindings.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{any::Any, collections::BTreeMap, sync::Arc};
 
-use arrow_array::{MapArray, builder::MapBuilder};
+use arrow_array::{
+    ArrayRef, MapArray,
+    builder::{ArrayBuilder, MapBuilder},
+};
 use arrow_schema::{DataType, Field};
 
 use super::ArrowBinding;
@@ -78,6 +81,80 @@ impl<K, V, const SORTED: bool> std::iter::FromIterator<(K, V)> for Map<K, V, SOR
     }
 }
 
+/// Builder for the `MapArray` of a [`Map`] or an [`OrderedMap`].
+///
+/// Arrow's `MapBuilder` always produces maps with `keys_sorted = false`. This wrapper sets the
+/// flag the binding declares in `data_type()`. It must do so in [`ArrayBuilder::finish`], not only
+/// in [`ArrowBinding::finish`]: a map nested in a struct, list or union is finished by its parent
+/// builder through `ArrayBuilder`, and the parent rejects a child whose type differs from its field.
+#[derive(Debug)]
+pub struct MapArrayBuilder<KB: ArrayBuilder, VB: ArrayBuilder> {
+    inner: MapBuilder<KB, VB>,
+    keys_sorted: bool,
+}
+
+impl<KB: ArrayBuilder, VB: ArrayBuilder> MapArrayBuilder<KB, VB> {
+    /// Wrap `inner` so that the maps it builds declare `keys_sorted`.
+    #[must_use]
+    pub fn new(inner: MapBuilder<KB, VB>, keys_sorted: bool) -> Self {
+        Self { inner, keys_sorted }
+    }
+    /// Builder for the keys of the current map entry.
+    pub fn keys(&mut self) -> &mut KB {
+        self.inner.keys()
+    }
+    /// Builder for the values of the current map entry.
+    pub fn values(&mut self) -> &mut VB {
+        self.inner.values()
+    }
+    /// Close the current map; see [`MapBuilder::append`].
+    ///
+    /// # Errors
+    /// When the key and value builders hold a different number of entries.
+    pub fn append(&mut self, is_valid: bool) -> Result<(), arrow_schema::ArrowError> {
+        self.inner.append(is_valid)
+    }
+    /// Build the `MapArray` and reset the builder.
+    pub fn finish(&mut self) -> MapArray {
+        let array = self.inner.finish();
+        self.with_keys_sorted_flag(array)
+    }
+    /// Build the `MapArray` without resetting the builder.
+    #[must_use]
+    pub fn finish_cloned(&self) -> MapArray {
+        let array = self.inner.finish_cloned();
+        self.with_keys_sorted_flag(array)
+    }
+    fn with_keys_sorted_flag(&self, array: MapArray) -> MapArray {
+        if !self.keys_sorted {
+            return array;
+        }
+        let (field, offsets, entries, nulls, _unsorted) = array.into_parts();
+        MapArray::new(field, offsets, entries, nulls, true)
+    }
+}
+
+impl<KB: ArrayBuilder, VB: ArrayBuilder> ArrayBuilder for MapArrayBuilder<KB, VB> {
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+    fn finish(&mut self) -> ArrayRef {
+        Arc::new(MapArrayBuilder::finish(self))
+    }
+    fn finish_cloned(&self) -> ArrayRef {
+        Arc::new(MapArrayBuilder::finish_cloned(self))
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+    fn into_box_any(self: Box<Self>) -> Box<dyn Any> {
+        self
+    }
+}
+
 impl<K, V, const SORTED: bool> ArrowBinding for Map<K, V, SORTED>
 where
     K: ArrowBinding,
@@ -85,7 +162,7 @@ where
     <K as ArrowBinding>::Builder: arrow_array::builder::ArrayBuilder,
     <V as ArrowBinding>::Builder: arrow_array::builder::ArrayBuilder,
 {
-    type Builder = MapBuilder<<K as ArrowBinding>::Builder, <V as ArrowBinding>::Builder>;
+    type Builder = MapArrayBuilder<<K as ArrowBinding>::Builder, <V as ArrowBinding>::Builder>;
     type Array = MapArray;
     fn data_type() -> DataType {
         let key_f = Field::new("keys", <K as ArrowBinding>::data_type(), false);
@@ -97,7 +174,7 @@ where
     fn new_builder(_capacity: usize) -> Self::Builder {
         let kb = <K as ArrowBinding>::new_builder(0);
         let vb = <V as ArrowBinding>::new_builder(0);
-        MapBuilder::new(None, kb, vb)
+        MapArrayBuilder::new(MapBuilder::new(None, kb, vb), SORTED)
     }
     fn append_value(b: &mut Self::Builder, v: &Self) {
         for (k, val) in &v.0 {
@@ -122,7 +199,7 @@ where
     <K as ArrowBinding>::Builder: arrow_array::builder::ArrayBuilder,
     <V as ArrowBinding>::Builder: arrow_array::builder::ArrayBuilder,
 {
-    type Builder = MapBuilder<<K as ArrowBinding>::Builder, <V as ArrowBinding>::Builder>;
+    type Builder = MapArrayBuilder<<K as ArrowBinding>::Builder, <V as ArrowBinding>::Builder>;
     type Array = MapArray;
     fn data_type() -> DataType {
         let key_f = Field::new("keys", <K as ArrowBinding>::data_type(), false);
@@ -133,7 +210,7 @@ where
     fn new_builder(_capacity: usize) -> Self::Builder {
         let kb = <K as ArrowBinding>::new_builder(0);
         let vb = <V as ArrowBinding>::new_builder(0);
-        MapBuilder::new(None, kb, vb)
+        MapArrayBuilder::new(MapBuilder::new(None, kb, vb), SORTED)
     }
     fn append_value(b: &mut Self::Builder, v: &Self) {
         for (k, val_opt) in &v.0 {
@@ -213,7 +290,7 @@ where
     <K as ArrowBinding>::Builder: arrow_array::builder::ArrayBuilder,
     <V as ArrowBinding>::Builder: arrow_array::builder::ArrayBuilder,
 {
-    type Builder = MapBuilder<<K as ArrowBinding>::Builder, <V as ArrowBinding>::Builder>;
+    type Builder = MapArrayBuilder<<K as ArrowBinding>::Builder, <V as ArrowBinding>::Builder>;
     type Array = MapArray;
     fn data_type() -> DataType {
         let key_f = Field::new("keys", <K as ArrowBinding>::data_type(), false);
@@ -224,7 +301,7 @@ where
     fn new_builder(_capacity: usize) -> Self::Builder {
         let kb = <K as ArrowBinding>::new_builder(0);
         let vb = <V as ArrowBinding>::new_builder(0);
-        MapBuilder::new(None, kb, vb)
+        MapArrayBuilder::new(MapBuilder::new(None, kb, vb), true)
     }
     fn append_value(b: &mut Self::Builder, v: &Self) {
         for (k, val) in &v.0 {
@@ -237,30 +314,7 @@ where
         let _ = b.append(false);
     }
     fn finish(mut b: Self::Builder) -> Self::Array {
-        use arrow_array::Array;
-        use arrow_data::ArrayData;
-
-        let map_array = b.finish();
-
-        // MapBuilder always creates maps with sorted=false, so we need to manually update it
-        // Get the existing field and create a new DataType with sorted=true
-        let data = map_array.into_data();
-        let (field, _sorted) = match data.data_type() {
-            DataType::Map(f, _) => (f.clone(), true),
-            _ => unreachable!(),
-        };
-
-        // Reconstruct the MapArray with sorted=true flag
-        // All data is copied from the valid MapArray produced by MapBuilder
-        let new_data = ArrayData::builder(DataType::Map(field, true))
-            .len(data.len())
-            .buffers(data.buffers().to_vec())
-            .child_data(data.child_data().to_vec())
-            .nulls(data.nulls().cloned())
-            .build()
-            .expect("MapArray reconstruction should succeed - all data copied from valid array");
-
-        MapArray::from(new_data)
+        b.finish()
     }
 }
 
@@ -272,7 +326,7 @@ where
     <K as ArrowBinding>::Builder: arrow_array::builder::ArrayBuilder,
     <V as ArrowBinding>::Builder: arrow_array::builder::ArrayBuilder,
 {
-    type Builder = MapBuilder<<K as ArrowBinding>::Builder, <V as ArrowBinding>::Builder>;
+    type Builder = MapArrayBuilder<<K as ArrowBinding>::Builder, <V as ArrowBinding>::Builder>;
     type Array = MapArray;
     fn data_type() -> DataType {
         let key_f = Field::new("keys", <K as ArrowBinding>::data_type(), false);
@@ -283,7 +337,7 @@ where
     fn new_builder(_capacity: usize) -> Self::Builder {
         let kb = <K as ArrowBinding>::new_builder(0);
         let vb = <V as ArrowBinding>::new_builder(0);
-        MapBuilder::new(None, kb, vb)
+        MapArrayBuilder::new(MapBuilder::new(None, kb, vb), true)
     }
     fn append_value(b: &mut Self::Builder, v: &Self) {
         for (k, val_opt) in &v.0 {
@@ -299,30 +353,7 @@ where
         let _ = b.append(false);
     }
     fn finish(mut b: Self::Builder) -> Self::Array {
-        use arrow_array::Array;
-        use arrow_data::ArrayData;
-
-        let map_array = b.finish();
-
-        // MapBuilder always creates maps with sorted=false, so we need to manually update it
-        // Get the existing field and create a new DataType with sorted=true
-        let data = map_array.into_data();
-        let (field, _sorted) = match data.data_type() {
-            DataType::Map(f, _) => (f.clone(), true),
-            _ => unreachable!(),
-        };
-
-        // Reconstruct the MapArray with sorted=true flag
-        // All data is copied from the valid MapArray produced by MapBuilder
-        let new_data = ArrayData::builder(DataType::Map(field, true))
-            .len(data.len())
-            .buffers(data.buffers().to_vec())
-            .child_data(data.child_data().to_vec())
-            .nulls(data.nulls().cloned())
-            .build()
-            .expect("MapArray reconstruction should succeed - all data copied from valid array");
-
-        MapArray::from(new_data)
+        b.finish()
     }
 }
 
