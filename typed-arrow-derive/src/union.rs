@@ -417,8 +417,9 @@ fn impl_union(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
 
     let view_impl = if cfg!(feature = "views") {
         quote! {
-            // View enum for union types
-            #[derive(Debug, Clone)]
+            // View enum for union types. It derives no traits: a variant may hold the view of a
+            // `#[derive(Record)]` struct, a list or a map, and those views implement neither
+            // `Debug` nor `Clone`.
             pub enum #view_ident<'a> {
                 #(#view_variants,)*
             }
